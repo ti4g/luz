@@ -38,11 +38,15 @@
 
     <!-- fundo: duas fotos em travessia sob um tom interpolado -->
     <div class="hero__bg" id="bgTint" aria-hidden="true">
-      <img class="bgimg" id="bgA" src="imgs/web/pic1-jpg.webp" alt=""
-           width="1206" height="1608" fetchpriority="high">
-      <img class="bgimg" id="bgB" src="imgs/web/pic2-jpg.webp" alt=""
-           width="1170" height="1560">
-      <span class="bg__color"></span>
+      <!-- as duas fotos já saem dessaturadas por filtro (barato, vai pra GPU);
+           uma única camada `multiply` dá o tom. Antes eram dois blends de tela
+           cheia, um deles `color`, que é não-separável e caro. -->
+      <div class="bg__fotos">
+        <img class="bgimg" id="bgA" src="imgs/web/pic1-jpg.webp" alt=""
+             width="1206" height="1608" fetchpriority="high">
+        <img class="bgimg" id="bgB" src="imgs/web/pic2-jpg.webp" alt=""
+             width="1170" height="1560">
+      </div>
       <span class="bg__mult"></span>
     </div>
     <div class="hero__wash" aria-hidden="true"></div>

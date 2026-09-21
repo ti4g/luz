@@ -31,7 +31,6 @@
   /* geometria do filmstrip — o JS reescreve em cada resize */
   --card-w: 140px;
   --full-h: 186px;
-  --half-h: 93px;
   --gap: 6px;
   --strip-top: 50%;
   --pad: 24px;
@@ -160,22 +159,25 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   object-fit: cover;
-  transform: scale(var(--zoom, 1.28));
-  transform-origin: center;
-  will-change: opacity, transform;
+  will-change: opacity;
 }
 
-/* mantém a luminância da foto e assume o tom do momento */
-.bg__color {
+/* Mantém a luminância da foto e assume o tom do momento.
+   Dessaturar por filtro + uma multiplicação chega ao mesmo resultado que o
+   blend `color`, por uma fração do custo de composição. */
+.bg__fotos {
   position: absolute; inset: 0;
-  background: var(--accent, #8a8a8a);
-  mix-blend-mode: color;
+  /* brilho contido de propósito: valores altos estouram os realces para
+     branco puro ANTES da multiplicação, e aí o tom sai chapado */
+  filter: grayscale(1) brightness(1.14) contrast(1.12);
+  transform: scale(1.30);
+  transform-origin: center;
+  will-change: transform;
 }
 .bg__mult {
   position: absolute; inset: 0;
   background: var(--accent, #8a8a8a);
   mix-blend-mode: multiply;
-  opacity: .46;
 }
 
 .hero__wash {
@@ -354,29 +356,34 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 .track.is-dragging { cursor: grabbing; }
 
+/* Altura FIXA. O que varia é o recorte — `clip-path` mexe só na pintura,
+   enquanto animar `height` obrigava o navegador a refazer o layout da fita
+   a cada quadro. */
 .frame {
   position: relative;
   flex: 0 0 auto;
   width: var(--card-w);
+  height: var(--full-h);
   padding: 0; margin: 0; border: 0;
   background: rgba(255,255,255,.05);
   overflow: hidden;
   cursor: pointer;
-  will-change: height;
+  clip-path: inset(0 0 50% 0);
+  will-change: clip-path;
 }
 
 .frame img {
   width: 100%; height: 100%;
   object-fit: cover;
-  object-position: 50% 26%;
+  object-position: 50% 50%;
+  will-change: transform;
 }
-.frame::after {
-  content: "";
+.frame .veu {
   position: absolute; inset: 0;
   background: #000;
-  opacity: var(--veu, .16);
+  opacity: .16;
+  will-change: opacity;
 }
-.frame:hover::after { opacity: .02; }
 
 /* ── rodapé do hero: posição · rolagem · setas ── */
 .hero__foot {
@@ -398,6 +405,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .rail__fill {
   position: absolute; inset-block: 0; left: 0;
   background: var(--ivory);
+  will-change: transform;
 }
 
 .scrolldown {

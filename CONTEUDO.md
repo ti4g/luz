@@ -92,7 +92,7 @@ primeira foto. Os ajustes ficam no topo do `script.js`:
 |---|---|
 | `AUTOPLAY` | ms entre as trocas da apresentação. `0` desliga. |
 | `AUTO_PASSOS` | quantas fotos ela mostra sozinha antes de descansar. |
-| `SUAVIDADE` | 0–1. Menor = mais deslizante; maior = mais direto ao ponto. |
+| `SUAVIDADE` | 0–1. Menor = mais deslizante; maior = mais colado ao dedo. Independe da taxa de quadros. |
 
 A distância de rolagem do hero é o `150svh` em `.hero__scrub` (styles.css).
 Aumentar deixa a varredura mais lenta e detalhada; diminuir deixa mais rápida.
@@ -114,6 +114,29 @@ Hoje são **1,5 tela** para percorrer as 9 fotos.
   só verdade.
 - Quem tem "reduzir movimento" ligado no sistema não recebe apresentação
   automática nem deslize: as fotos trocam direto.
+
+### Por que não tem GSAP (nem precisa)
+
+O hero desenha a cada quadro. Biblioteca de animação nenhuma resolve isso: o
+que importa é **qual propriedade** você anima e **onde** você escreve. Medindo o
+custo de CPU+layout de um quadro, o desenho caiu de **1,81 ms para 0,33 ms
+(82% menos)** com quatro mudanças:
+
+| Antes | Agora | Por quê |
+|---|---|---|
+| `--zoom` escrito no `.hero__stage` | `transform` escrito nas próprias fotos | Era **1,51 ms — 80% de tudo**. Custom property num ancestral invalida o estilo da subárvore inteira: 9 cards, fundo, textos. E servia a duas imagens. |
+| `height` animada nos 9 cards | altura fixa + `clip-path` | `height` é layout; `clip-path` é só pintura. |
+| `left` animado no trilho | `translateX` | idem: `left` é layout. |
+| `--veu` (custom property) em 9 cards | `opacity` num elemento real | evita invalidar a subárvore de cada card. |
+| `mix-blend-mode: color` + `multiply` em tela cheia | `filter: grayscale()` + um `multiply` | `color` é blend não-separável, dos mais caros que existem. |
+
+Além disso, o laço agora **para quando nada está mudando** (antes repintava para
+sempre) e lê a rolagem por `scrollY` em vez de `getBoundingClientRect()` a cada
+quadro, que forçava recálculo de layout logo depois de escrever estilos.
+
+Se um dia fizer sentido usar GSAP, que seja pelo que ele faz bem — timelines
+complexas e encadeadas — e não para consertar custo de renderização, que ele
+não conserta.
 
 ### Duas decisões que não são óbvias no código
 

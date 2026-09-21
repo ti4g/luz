@@ -31,7 +31,8 @@ const SLIDES = [
 
 const AUTOPLAY = 4200;    // ms entre as trocas da apresentação. 0 desliga.
 const AUTO_PASSOS = 3;    // quantas fotos ela mostra sozinha antes de descansar
-const SUAVIDADE = 0.12;   // 0–1. Menor = mais deslizante, maior = mais direto.
+const SUAVIDADE = 0.20;   // 0–1. Menor = mais deslizante, maior = mais colado ao dedo.
+                          // Agora independe da taxa de quadros (60 ou 120 Hz).
 
 /* ═══════════════════════════════════════════════════════════════
    Daqui para baixo é mecanismo. Não precisa mexer.
@@ -55,7 +56,8 @@ const stage   = document.getElementById("stage");
 const track   = document.getElementById("track");
 const bgA     = document.getElementById("bgA");
 const bgB     = document.getElementById("bgB");
-const bgTint  = document.getElementById("bgTint");
+const bgFotos = document.querySelector(".bg__fotos");
+const bgMult  = document.querySelector(".bg__mult");
 const titleEl = document.getElementById("title");
 const stepEl  = document.getElementById("step");
 const headEl  = document.getElementById("label");
@@ -66,18 +68,23 @@ const railFill= document.getElementById("railFill");
 const ultimo = () => SLIDES.length - 1;
 
 let caixa = { w: 0, h: 0 };
-let cardW = 0, fullH = 0, halfH = 0, gap = 0, passo = 0;
+let cardW = 0, fullH = 0, gap = 0, passo = 0;
 
 /* `f` é a posição contínua na fita: 3.5 = exatamente entre a 4ª e a 5ª foto.
    Tudo é desenhado a partir dele, e por isso não existe passo nem trava. */
 let f = 0, fAlvo = 0, fAuto = 0;
 let assumiu = false;      // a pessoa rolou? então a rolagem manda.
 let fTake = 0;            // onde a apresentação parou quando ela assumiu
-let visivel = true, laco = null;
+let visivel = true, laco = null, ultimoT = 0;
 let idxA = -1, idxB = -1, rotuloAtual = -1;
 let timerAuto = null;
+let scrubTopo = 0, percurso = 1;   // geometria da rolagem, medida uma vez
+let ultCorte = [], ultVeu = [];    // últimos valores escritos, para não reescrever
+let ultAccent = "", ultX = null, ultZoom = null, ultOp = null, ultRail = null;
 
 const frames = [];
+const veus = [];
+const fotos = [];
 const CORES = SLIDES.map((s) => [
   parseInt(s.cor.slice(1, 3), 16),
   parseInt(s.cor.slice(3, 5), 16),
@@ -101,7 +108,14 @@ function montar() {
     img.decoding = "async";
     if (i !== 0) img.loading = "lazy";
 
-    b.appendChild(img);
+    // véu como elemento real: escrever `opacity` direto é mais barato que uma
+    // custom property, que invalida o estilo da subárvore do card
+    const veu = document.createElement("span");
+    veu.className = "veu";
+    b.append(img, veu);
+    veus.push(veu);
+    fotos.push(img);
+
     b.addEventListener("click", () => {
       if (b.dataset.arrastou) { delete b.dataset.arrastou; return; }
       irPara(i);
@@ -112,6 +126,7 @@ function montar() {
   });
 
   if (railAll) railAll.textContent = String(SLIDES.length).padStart(2, "0");
+  if (railFill) railFill.style.width = `${100 / SLIDES.length}%`;
 }
 
 /* ─── geometria: uma medição alimenta todos os tamanhos ─── */
@@ -119,7 +134,7 @@ function medir() {
   caixa = { w: stage.clientWidth, h: stage.clientHeight };
 
   fullH = clamp(caixa.h * CARD_H, 96, 360);
-  halfH = fullH / 2;
+
   cardW = fullH * CARD_AR;
   gap   = Math.max(4, Math.round(cardW * GAP_R));
   passo = cardW + gap;
@@ -129,7 +144,13 @@ function medir() {
   stage.style.setProperty("--strip-top", `${STRIP_TOP * 100}%`);
   stage.style.setProperty("--pad", `${Math.max(16, Math.round(caixa.w * PAD_R))}px`);
   stage.style.setProperty("--label", `${Math.max(9, Math.round(caixa.h * LABEL_R))}px`);
+  stage.style.setProperty("--full-h", `${fullH}px`);
 
+  // geometria da rolagem: medida aqui, nunca dentro do laço
+  scrubTopo = scrub.getBoundingClientRect().top + window.scrollY;
+  percurso  = Math.max(1, scrub.offsetHeight - stage.offsetHeight);
+
+  ultCorte = []; ultVeu = []; ultX = ultZoom = ultOp = ultRail = null; ultAccent = "";
   desenhar(f);
 }
 
@@ -139,12 +160,14 @@ function medir() {
    `preventDefault` em lugar nenhum: a barra de rolagem continua
    dizendo a verdade e o toque no celular é o nativo.
    ───────────────────────────────────────────────────────────────── */
-function percorrivel() {
-  return Math.max(1, scrub.offsetHeight - stage.offsetHeight);
-}
+const percorrivel = () => percurso;
 
+/* Lê a rolagem por `scrollY` e por uma geometria medida uma única vez.
+   `getBoundingClientRect()` a cada quadro forçaria o navegador a recalcular
+   o layout inteiro logo depois de nós termos escrito estilos — é o clássico
+   layout thrashing, e some com ele aqui. */
 function progresso() {
-  return clamp(-scrub.getBoundingClientRect().top / percorrivel(), 0, 1);
+  return clamp((window.scrollY - scrubTopo) / percurso, 0, 1);
 }
 
 /* A apresentação pode já ter andado sozinha quando a pessoa começa a rolar.
@@ -179,33 +202,68 @@ function irPara(i) {
    DESENHO — tudo derivado de um único número contínuo
    ═══════════════════════════════════════════════════════════════ */
 function desenhar(v) {
-  /* a fita desliza; o card não se mexe sozinho */
-  track.style.setProperty("--x", `${caixa.w / 2 - (v * passo + cardW / 2)}px`);
+  /* a fita desliza; o card não se mexe sozinho.
+     transform direto, sem passar por custom property, evita uma invalidação
+     de estilo a mais por quadro */
+  const x = Math.round((caixa.w / 2 - (v * passo + cardW / 2)) * 100) / 100;
+  if (x !== ultX) {
+    track.style.transform = `translate3d(${x}px,0,0)`;
+    ultX = x;
+  }
 
-  /* cada card cresce conforme se aproxima do centro — sem degraus */
+  /* Cada card cresce conforme se aproxima do centro.
+     A caixa tem altura FIXA e o que varia é o recorte: `clip-path` mexe só na
+     pintura, enquanto `height` obrigava o navegador a refazer o layout da
+     fita inteira a cada quadro — era 68% do custo de CPU do desenho. */
   const perto = Math.round(v);
-  frames.forEach((el, i) => {
+  for (let i = 0; i < frames.length; i++) {
+    const el = frames[i];
     const d = Math.min(1, Math.abs(i - v));
-    el.style.height = `${halfH + (fullH - halfH) * (1 - d)}px`;
-    el.style.setProperty("--veu", String(0.16 * d));
+    const corte = Math.round(d * 50 * 10) / 10;   // 0% no foco, 50% nos vizinhos
+    if (corte !== ultCorte[i]) {
+      el.style.clipPath = `inset(0 0 ${corte}% 0)`;
+      // Compensa o recorte: sem isto o card cortado mostraria a metade de cima
+      // da foto (cabelo, céu), e não a faixa do rosto que o `object-fit: cover`
+      // escolhia quando a caixa encolhia de verdade.
+      fotos[i].style.transform = `translateY(${-(fullH * d * 0.13).toFixed(1)}px)`;
+      ultCorte[i] = corte;
+    }
+    const veu = Math.round(0.16 * d * 100) / 100;
+    if (veu !== ultVeu[i]) {
+      veus[i].style.opacity = String(veu);
+      ultVeu[i] = veu;
+    }
     if ((i === perto) !== (el.getAttribute("aria-current") === "true")) {
       el.setAttribute("aria-current", String(i === perto));
     }
-  });
+  }
 
   /* fundo: duas fotos em travessia + um tom interpolado por cima */
   const a = Math.floor(v), b = Math.min(ultimo(), a + 1), t = v - a;
   if (a !== idxA) { bgA.src = SLIDES[a].img; idxA = a; }
   if (b !== idxB) { bgB.src = SLIDES[b].img; idxB = b; }
-  bgB.style.opacity = String(t);
-  bgA.style.opacity = String(1 - t);
+  const opFoto = Math.round(t * 1000) / 1000;
+  if (opFoto !== ultOp) {
+    bgB.style.opacity = String(opFoto);
+    bgA.style.opacity = String(1 - opFoto);
+    ultOp = opFoto;
+  }
 
   const A = CORES[a], B = CORES[b];
-  bgTint.style.setProperty("--accent",
-    `rgb(${Math.round(A[0] + (B[0] - A[0]) * t)} ${Math.round(A[1] + (B[1] - A[1]) * t)} ${Math.round(A[2] + (B[2] - A[2]) * t)})`);
+  const accent = `rgb(${Math.round(A[0] + (B[0] - A[0]) * t)} ${Math.round(A[1] + (B[1] - A[1]) * t)} ${Math.round(A[2] + (B[2] - A[2]) * t)})`;
+  if (accent !== ultAccent) {
+    bgMult.style.backgroundColor = accent;   // direto no elemento, não por variável
+    ultAccent = accent;
+  }
 
-  /* respiro lento do zoom ao longo de toda a fita */
-  stage.style.setProperty("--zoom", String(1.30 - 0.08 * (v / ultimo())));
+  /* Respiro lento do zoom. Escrito nas próprias fotos: quando isto era uma
+     custom property no palco, cada quadro invalidava o estilo do hero inteiro
+     — 1,5 ms por quadro, 80% do custo do desenho, por causa de duas imagens. */
+  const zoom = Math.round((1.30 - 0.08 * (v / ultimo())) * 1000) / 1000;
+  if (zoom !== ultZoom) {
+    bgFotos.style.transform = `scale(${zoom})`;
+    ultZoom = zoom;
+  }
 
   /* rótulo: aparece quando assenta numa foto, some ao passar entre elas.
      O botão de orçamento fica de fora deste fade, de propósito. */
@@ -229,25 +287,43 @@ function desenhar(v) {
     if (railNow) railNow.textContent = String(perto + 1).padStart(2, "0");
   }
 
-  /* trilho de posição, contínuo como o resto */
+  /* Trilho de posição. `translateX` em vez de `left`: `left` é propriedade de
+     layout e obrigava um recálculo por quadro. A largura é fixa, definida uma
+     vez em montar(). */
   if (railFill) {
-    railFill.style.width = `${100 / SLIDES.length}%`;
-    railFill.style.left  = `${(v / SLIDES.length) * 100}%`;
+    const desl = Math.round(v * 1000) / 1000;
+    if (desl !== ultRail) {
+      railFill.style.transform = `translateX(${desl * 100}%)`;
+      ultRail = desl;
+    }
   }
 }
 
 /* ─── laço: persegue o alvo com folga, é isso que dá o deslize ─── */
-function tique() {
+function tique(agora) {
+  // dt real: sem isso a suavização corre o dobro num monitor de 120 Hz
+  const dt = ultimoT ? Math.min(64, agora - ultimoT) : 16.7;
+  ultimoT = agora;
+
   fAlvo = assumiu ? posicaoPara(progresso()) : fAuto;
 
   const delta = fAlvo - f;
-  f += delta * (semMovimento() ? 1 : SUAVIDADE);
-  if (Math.abs(delta) < 0.0005) f = fAlvo;
+  if (semMovimento()) {
+    f = fAlvo;
+  } else {
+    f += delta * (1 - Math.pow(1 - SUAVIDADE, dt / 16.7));
+    if (Math.abs(delta) < 0.0004) f = fAlvo;
+  }
 
   desenhar(f);
 
-  if (visivel) laco = requestAnimationFrame(tique);
-  else laco = null;
+  // descansa quando não há mais nada a mover: nada de repintar a troco de nada
+  if (visivel && f !== fAlvo) {
+    laco = requestAnimationFrame(tique);
+  } else {
+    laco = null;
+    ultimoT = 0;
+  }
 }
 
 function acordar() {
@@ -335,6 +411,13 @@ function ligarEntradas() {
   });
 
   new ResizeObserver(medir).observe(stage);
+
+  // Rede de segurança: `percurso` e `scrubTopo` são medidos uma vez e usados
+  // a cada quadro. Se ficarem velhos, a rolagem passa a mapear errado — então
+  // remede quando as fontes assentam e quando o aparelho vira.
+  window.addEventListener("load", medir);
+  window.addEventListener("orientationchange", () => setTimeout(medir, 250));
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(medir);
 }
 
 /* ═══════════════════════════════════════════════════════════════
